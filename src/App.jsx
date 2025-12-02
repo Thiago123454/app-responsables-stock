@@ -13,7 +13,9 @@ import {
   RotateCcw,
   Wifi,
   WifiOff,
-  AlertTriangle
+  AlertTriangle,
+  RefreshCw,
+  Bug // Icono para debug
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -28,12 +30,13 @@ import {
   orderBy, 
   serverTimestamp,
   getDoc,
-  writeBatch
+  writeBatch,
+  runTransaction,
+  getDocs // <--- AGREGADO: Necesario para obtener la lista de transacciones a borrar
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
-// IMPORTANTE: Al subir a Hostinger, REEMPLAZA este bloque con tu configuración real de Firebase.
 const firebaseConfig = {
   apiKey: "AIzaSyB9g809B-1ahP4ZYz3Mck0-vjBLT6N9srg",
   authDomain: "movimientos-88740.firebaseapp.com",
@@ -123,37 +126,71 @@ const SettingsView = ({ config, onSaveConfig }) => {
     alert("Configuración guardada en la nube.");
   };
 
+  const handleForceResetDebug = () => {
+    // Establecemos una fecha dummy para que el sistema crea que no se ha hecho hoy
+    onSaveConfig({ ...config, lastResetDate: "PENDIENTE_PRUEBA" });
+    alert("Indicador de cierre borrado. El sistema intentará ejecutar el cierre de nuevo si la hora actual > hora programada.");
+  };
+
   return (
     <PageLayout title="Configuración" subtitle="Ajustes generales del sistema">
-      <div className="max-w-2xl bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
-          <div className="bg-orange-100 p-2 rounded-lg text-[#ff7f00]">
-            <Clock className="w-6 h-6" />
-          </div>
-          <div>
-            <h3 className="text-lg font-bold text-gray-800">Cierre Diario Automático</h3>
-            <p className="text-sm text-gray-500">Defina cuándo se reinician los movimientos del día.</p>
-          </div>
+      <div className="max-w-2xl bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-8">
+        
+        {/* Sección de Hora */}
+        <div>
+            <div className="flex items-center gap-3 mb-4 pb-2 border-b border-gray-100">
+            <div className="bg-orange-100 p-2 rounded-lg text-[#ff7f00]">
+                <Clock className="w-6 h-6" />
+            </div>
+            <div>
+                <h3 className="text-lg font-bold text-gray-800">Cierre Diario Automático</h3>
+                <p className="text-sm text-gray-500">Defina cuándo se reinician los movimientos.</p>
+            </div>
+            </div>
+
+            <div className="space-y-4">
+            <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Hora de reinicio (Madrugada)</label>
+                <input 
+                type="time" 
+                value={resetTime}
+                onChange={(e) => setResetTime(e.target.value)}
+                className="block w-full sm:w-48 border border-gray-300 rounded-lg p-2.5 text-gray-800 focus:ring-2 focus:ring-[#ff7f00] outline-none"
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                A esta hora, los "Movimientos de Hoy" pasarán a ser "Movimientos del Día Anterior" y el contador volverá a cero.
+                </p>
+            </div>
+
+            <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                <p className="text-xs text-gray-600">
+                <strong>Último cierre realizado:</strong> {config?.lastResetDate || "Nunca"}
+                </p>
+            </div>
+
+            <div className="flex justify-end">
+                <Button onClick={handleSave}>Guardar Cambios</Button>
+            </div>
+            </div>
         </div>
 
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Hora de reinicio (Madrugada)</label>
-            <input 
-              type="time" 
-              value={resetTime}
-              onChange={(e) => setResetTime(e.target.value)}
-              className="block w-full sm:w-48 border border-gray-300 rounded-lg p-2.5 text-gray-800 focus:ring-2 focus:ring-[#ff7f00] outline-none"
-            />
-            <p className="text-xs text-gray-500 mt-2">
-              A esta hora, los "Movimientos de Hoy" pasarán a ser "Movimientos del Día Anterior" y el contador volverá a cero.
-            </p>
-          </div>
-
-          <div className="pt-4 flex justify-end">
-             <Button onClick={handleSave}>Guardar Cambios</Button>
-          </div>
+        {/* Sección de Debug / Pruebas */}
+        <div className="border-t border-gray-100 pt-6">
+            <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2 text-red-800 font-bold text-sm">
+                    <Bug className="w-4 h-4" />
+                    <span>Zona de Pruebas (Debug)</span>
+                </div>
+                <p className="text-xs text-red-600 mb-4 leading-relaxed">
+                    Utiliza este botón si necesitas probar la funcionalidad de cierre automático HOY mismo. 
+                    Esto borrará la "marca" de que el cierre ya se hizo, forzando al sistema a intentarlo de nuevo si la hora ya pasó.
+                </p>
+                <Button variant="danger" onClick={handleForceResetDebug} className="w-full sm:w-auto text-xs py-2">
+                    Resetear Bandera de Cierre
+                </Button>
+            </div>
         </div>
+
       </div>
     </PageLayout>
   );
@@ -449,6 +486,7 @@ export default function StockApp() {
   const [activeTab, setActiveTab] = useState('rapidos'); 
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState(null);
+  const [isResetting, setIsResetting] = useState(false); // <--- Nuevo Estado para Feedback
   
   // Estados Iniciales
   const [stockState, setStockState] = useState({
@@ -524,66 +562,82 @@ export default function StockApp() {
     }
   }, [user]);
 
-  // 3. Lógica de Cierre Diario ROBUSTA (Checkea al iniciar y periódicamente)
+  // 3. Lógica de Cierre Diario ROBUSTA (Transaction-based)
   const checkAndRunDailyReset = async () => {
     if (!user || !db) return;
 
     try {
       const now = new Date();
       const currentDateString = now.toDateString(); // Ej: "Mon Dec 02 2025"
-      
-      // Obtener hora de reset configurada (ej: "05:00")
       const [resetHour, resetMinute] = config.resetTime.split(':').map(Number);
       
       // Crear objeto fecha para el umbral de hoy
       const todayResetThreshold = new Date(now);
       todayResetThreshold.setHours(resetHour, resetMinute, 0, 0);
 
-      // Verificamos en DB directamente para evitar usar estado viejo
+      // Si la hora actual es menor al threshold, aún no es momento.
+      if (now < todayResetThreshold) return;
+
       const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'app_config');
-      const configSnap = await getDoc(configRef);
-      const serverConfig = configSnap.exists() ? configSnap.data() : config;
-      const lastResetDate = serverConfig.lastResetDate;
+      const stockPrevRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_previous');
+      const stockCurrentRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_current');
 
-      // CONDICIÓN CLAVE:
-      // Si la fecha del último reset NO es hoy...
-      if (lastResetDate !== currentDateString) {
-        
-        // Y si la hora actual es MAYOR a la hora de reset...
-        // (Significa que ya pasamos las 5 AM de hoy y todavía no reseteamos)
-        if (now >= todayResetThreshold) {
+      let resetPerformed = false;
+
+      await runTransaction(db, async (transaction) => {
+          // LECTURAS
+          const configDoc = await transaction.get(configRef);
+          const serverConfig = configDoc.exists() ? configDoc.data() : config;
           
-          console.log("¡EJECUTANDO RESET DIARIO AUTOMÁTICO!");
+          // Verificamos si ya se hizo HOY
+          if (serverConfig.lastResetDate === currentDateString) {
+             return; // Ya hecho, abortamos.
+          }
           
-          const batch = writeBatch(db);
+          const currentStockDoc = await transaction.get(stockCurrentRef);
+          const currentStockData = currentStockDoc.exists() ? currentStockDoc.data() : { move_1: {}, move_2: {}, move_3: {}, move_4: {} };
+
+          // ESCRITURAS
+          transaction.set(stockPrevRef, currentStockData);
+          transaction.set(stockCurrentRef, { move_1: {}, move_2: {}, move_3: {}, move_4: {} });
+          transaction.set(configRef, { ...serverConfig, lastResetDate: currentDateString });
           
-          // A. Mover stock actual a previo
-          const stockPrevRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_previous');
-          batch.set(stockPrevRef, stockState); // Nota: stockState podría tener un ligero lag, idealmente leer de DB
-
-          // B. Resetear stock actual
-          const stockCurrentRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_current');
-          batch.set(stockCurrentRef, { move_1: {}, move_2: {}, move_3: {}, move_4: {} });
-
-          // C. Actualizar fecha de reset a HOY
-          batch.set(configRef, { ...serverConfig, lastResetDate: currentDateString });
-
-          await batch.commit();
-          console.log("Reset completado exitosamente.");
-        }
+          resetPerformed = true;
+      });
+      
+      // Chequeo secundario solo para el feedback visual en UI (fuera de la transacción)
+      if (config.lastResetDate !== currentDateString) {
+          setIsResetting(true);
+          setTimeout(() => setIsResetting(false), 3000); // Mostrar aviso por 3 segs
       }
+
+      // --- AGREGADO: Borrar historial si se hizo el reset ---
+      if (resetPerformed) {
+        console.log("Reset diario confirmado. Limpiando historial de transacciones...");
+        const transactionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
+        const transactionsSnapshot = await getDocs(transactionsRef);
+        
+        // Usamos un batch para borrar eficientemente
+        const deleteBatch = writeBatch(db);
+        transactionsSnapshot.forEach((doc) => {
+          deleteBatch.delete(doc.ref);
+        });
+        
+        await deleteBatch.commit();
+        console.log("Historial limpiado exitosamente.");
+      }
+
     } catch (e) {
-      console.error("Error en lógica de reset:", e);
+      console.error("Error en reset:", e);
+      setIsResetting(false);
     }
   };
 
-  // Ejecutar checkeo al cargar usuario/config y periódicamente
   useEffect(() => {
-    checkAndRunDailyReset(); // Ejecutar apenas carga
-    
-    const interval = setInterval(checkAndRunDailyReset, 60000); // Y chequear cada 1 minuto
+    checkAndRunDailyReset();
+    const interval = setInterval(checkAndRunDailyReset, 60000); 
     return () => clearInterval(interval);
-  }, [user, config, stockState]); // Dependencias para tener datos frescos
+  }, [user, config.resetTime, config.lastResetDate]); 
 
   // Manejadores
   const handleUpdateStock = async (moveId, values) => {
@@ -634,7 +688,16 @@ export default function StockApp() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
+    <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col relative">
+      
+      {/* --- BANNER DE RESETEO AUTOMÁTICO --- */}
+      {isResetting && (
+        <div className="bg-blue-600 text-white px-4 py-2 text-center text-sm font-bold animate-in slide-in-from-top fixed top-16 left-0 w-full z-40 flex items-center justify-center gap-2 shadow-md">
+          <RefreshCw className="w-4 h-4 animate-spin" />
+          <span>Realizando cierre diario y archivando movimientos...</span>
+        </div>
+      )}
+
       {/* Header Optimizado Móvil */}
       <header className="bg-[#bf0000] text-white shadow-lg sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 lg:px-8 h-16 flex items-center justify-between">
