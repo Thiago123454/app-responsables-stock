@@ -524,36 +524,66 @@ export default function StockApp() {
     }
   }, [user]);
 
-  // 3. Lógica de Cierre Diario
-  useEffect(() => {
+  // 3. Lógica de Cierre Diario ROBUSTA (Checkea al iniciar y periódicamente)
+  const checkAndRunDailyReset = async () => {
     if (!user || !db) return;
 
-    const interval = setInterval(async () => {
+    try {
       const now = new Date();
-      const currentTimeString = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-      const currentDateString = now.toDateString();
+      const currentDateString = now.toDateString(); // Ej: "Mon Dec 02 2025"
+      
+      // Obtener hora de reset configurada (ej: "05:00")
+      const [resetHour, resetMinute] = config.resetTime.split(':').map(Number);
+      
+      // Crear objeto fecha para el umbral de hoy
+      const todayResetThreshold = new Date(now);
+      todayResetThreshold.setHours(resetHour, resetMinute, 0, 0);
 
-      if (currentTimeString === config.resetTime && config.lastResetDate !== currentDateString) {
-        try {
-          const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'app_config');
-          const configSnap = await getDoc(configRef);
-          const serverConfig = configSnap.exists() ? configSnap.data() : config;
+      // Verificamos en DB directamente para evitar usar estado viejo
+      const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'app_config');
+      const configSnap = await getDoc(configRef);
+      const serverConfig = configSnap.exists() ? configSnap.data() : config;
+      const lastResetDate = serverConfig.lastResetDate;
 
-          if (serverConfig.lastResetDate !== currentDateString) {
-            const batch = writeBatch(db);
-            const stockPrevRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_previous');
-            batch.set(stockPrevRef, stockState);
-            const stockCurrentRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_current');
-            batch.set(stockCurrentRef, { move_1: {}, move_2: {}, move_3: {}, move_4: {} });
-            batch.set(configRef, { ...serverConfig, lastResetDate: currentDateString });
-            await batch.commit();
-          }
-        } catch (e) { console.error(e); }
+      // CONDICIÓN CLAVE:
+      // Si la fecha del último reset NO es hoy...
+      if (lastResetDate !== currentDateString) {
+        
+        // Y si la hora actual es MAYOR a la hora de reset...
+        // (Significa que ya pasamos las 5 AM de hoy y todavía no reseteamos)
+        if (now >= todayResetThreshold) {
+          
+          console.log("¡EJECUTANDO RESET DIARIO AUTOMÁTICO!");
+          
+          const batch = writeBatch(db);
+          
+          // A. Mover stock actual a previo
+          const stockPrevRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_previous');
+          batch.set(stockPrevRef, stockState); // Nota: stockState podría tener un ligero lag, idealmente leer de DB
+
+          // B. Resetear stock actual
+          const stockCurrentRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_current');
+          batch.set(stockCurrentRef, { move_1: {}, move_2: {}, move_3: {}, move_4: {} });
+
+          // C. Actualizar fecha de reset a HOY
+          batch.set(configRef, { ...serverConfig, lastResetDate: currentDateString });
+
+          await batch.commit();
+          console.log("Reset completado exitosamente.");
+        }
       }
-    }, 15000); 
+    } catch (e) {
+      console.error("Error en lógica de reset:", e);
+    }
+  };
 
+  // Ejecutar checkeo al cargar usuario/config y periódicamente
+  useEffect(() => {
+    checkAndRunDailyReset(); // Ejecutar apenas carga
+    
+    const interval = setInterval(checkAndRunDailyReset, 60000); // Y chequear cada 1 minuto
     return () => clearInterval(interval);
-  }, [user, config, stockState]);
+  }, [user, config, stockState]); // Dependencias para tener datos frescos
 
   // Manejadores
   const handleUpdateStock = async (moveId, values) => {
