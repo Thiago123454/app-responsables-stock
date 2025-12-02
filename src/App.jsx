@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Home, 
   ArrowRightLeft, 
@@ -15,7 +15,8 @@ import {
   WifiOff,
   AlertTriangle,
   RefreshCw,
-  Bug // Icono para debug
+  Bug,
+  ArrowRight
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -32,7 +33,7 @@ import {
   getDoc,
   writeBatch,
   runTransaction,
-  getDocs // <--- AGREGADO: Necesario para obtener la lista de transacciones a borrar
+  getDocs 
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 
@@ -71,6 +72,9 @@ const PRODUCTS = [
   { id: 'vasos_pl', name: 'Vasos PL', color: 'bg-[#e06666]', text: 'text-white' },
 ];
 
+// Definimos el orden lógico del flujo para calcular pasos intermedios
+const SECTOR_ORDER = ['depoSala1', 'deposito', 'puerta', 'candy', 'desperdicio'];
+
 const SECTORS = [
   { id: 'depoSala1', name: 'Depo Sala 1', type: 'cajas' },
   { id: 'deposito', name: 'Deposito', type: 'unidades' },
@@ -85,6 +89,25 @@ const MOVEMENTS_TYPES = [
   { id: 'move_3', label: 'Puerta a Candy', subLabel: '(Unidades)', source: 'puerta', target: 'candy', unit: 'Unidades' },
   { id: 'move_4', label: 'Candy a Desperdicio', subLabel: '(Unidades)', source: 'candy', target: 'desperdicio', unit: 'Unidades' },
 ];
+
+// Helper para encontrar los movimientos intermedios
+const getIntermediateMoves = (fromId, toId) => {
+  const fromIndex = SECTOR_ORDER.indexOf(fromId);
+  const toIndex = SECTOR_ORDER.indexOf(toId);
+  
+  if (fromIndex === -1 || toIndex === -1 || fromIndex >= toIndex) return [];
+
+  const moves = [];
+  // Recorremos desde el origen hasta el destino paso a paso
+  for (let i = fromIndex; i < toIndex; i++) {
+    const currentSource = SECTOR_ORDER[i];
+    const currentTarget = SECTOR_ORDER[i+1];
+    // Buscamos el movimiento definido que conecta estos dos sectores
+    const move = MOVEMENTS_TYPES.find(m => m.source === currentSource && m.target === currentTarget);
+    if (move) moves.push(move);
+  }
+  return moves;
+};
 
 // --- Componentes de UI ---
 
@@ -127,7 +150,6 @@ const SettingsView = ({ config, onSaveConfig }) => {
   };
 
   const handleForceResetDebug = () => {
-    // Establecemos una fecha dummy para que el sistema crea que no se ha hecho hoy
     onSaveConfig({ ...config, lastResetDate: "PENDIENTE_PRUEBA" });
     alert("Indicador de cierre borrado. El sistema intentará ejecutar el cierre de nuevo si la hora actual > hora programada.");
   };
@@ -199,11 +221,19 @@ const SettingsView = ({ config, onSaveConfig }) => {
 // --- Componente: Pestaña Movimientos Rápidos ---
 
 const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
-  const [selectedMove, setSelectedMove] = useState(MOVEMENTS_TYPES[1].id);
+  const [fromSector, setFromSector] = useState(SECTOR_ORDER[1]); // Default: Deposito
+  const [toSector, setToSector] = useState(SECTOR_ORDER[2]); // Default: Puerta
+  
   const [tempValues, setTempValues] = useState({});
   const [loading, setLoading] = useState(false);
 
-  const currentMove = MOVEMENTS_TYPES.find(m => m.id === selectedMove);
+  // Calcular ruta y movimientos intermedios
+  const calculatedPath = useMemo(() => {
+    return getIntermediateMoves(fromSector, toSector);
+  }, [fromSector, toSector]);
+
+  // Validar si la ruta es válida
+  const isValidPath = calculatedPath.length > 0;
 
   const handleInputChange = (productId, value) => {
     setTempValues(prev => ({
@@ -223,8 +253,16 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
       return;
     }
 
+    if (!isValidPath) {
+      alert("La ruta seleccionada no es válida. Asegúrese de mover en la dirección correcta (ej: Deposito -> Candy).");
+      return;
+    }
+
     setLoading(true);
-    await onUpdateStock(selectedMove, valuesToSave);
+    // Enviamos TODOS los movimientos intermedios
+    // El App.jsx ahora manejará un array de movimientos
+    await onUpdateStock(calculatedPath, valuesToSave);
+    
     setLoading(false);
     setTempValues({});
   };
@@ -232,47 +270,92 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
   return (
     <PageLayout 
       title="Movimientos Rápidos" 
-      subtitle="Registre el flujo de mercadería entre sectores"
+      subtitle="Registre el flujo de mercadería. Salte etapas y el sistema rellenará los intermedios."
     >
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 space-y-4">
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-            <h3 className="font-semibold text-gray-700 mb-3">Seleccione Etapa</h3>
-            <div className="space-y-2">
-              {MOVEMENTS_TYPES.map((move) => (
-                <button
-                  key={move.id}
-                  onClick={() => setSelectedMove(move.id)}
-                  className={`w-full text-left px-4 py-3 rounded-lg border-l-4 transition-all ${
-                    selectedMove === move.id 
-                      ? 'bg-orange-50 border-[#ff7f00] text-[#ff7f00] font-medium shadow-sm' 
-                      : 'border-transparent hover:bg-gray-50 text-gray-600'
-                  }`}
+          
+          {/* SELECTOR DE RUTA */}
+          <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+            <h3 className="font-bold text-gray-800 mb-4">Configurar Ruta</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Desde (Origen)</label>
+                <select 
+                  value={fromSector}
+                  onChange={(e) => {
+                    setFromSector(e.target.value);
+                    // Resetear 'to' si es inválido o igual
+                    if(SECTOR_ORDER.indexOf(e.target.value) >= SECTOR_ORDER.indexOf(toSector)) {
+                       // Intentar poner el siguiente disponible
+                       const nextIdx = SECTOR_ORDER.indexOf(e.target.value) + 1;
+                       if (nextIdx < SECTOR_ORDER.length) setToSector(SECTOR_ORDER[nextIdx]);
+                    }
+                  }}
+                  className="w-full p-2.5 bg-gray-50 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-[#ff7f00] outline-none"
                 >
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <span className="block font-medium">{move.label}</span>
-                      <span className="text-xs text-gray-500">{move.subLabel}</span>
-                    </div>
-                  </div>
-                </button>
-              ))}
+                  {SECTORS.filter(s => s.id !== 'desperdicio').map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex justify-center -my-2 relative z-10">
+                <div className="bg-white p-1 rounded-full border border-gray-200 text-gray-400">
+                  <ArrowRight className="w-4 h-4" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Hacia (Destino)</label>
+                <select 
+                  value={toSector}
+                  onChange={(e) => setToSector(e.target.value)}
+                  className="w-full p-2.5 bg-gray-50 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-[#ff7f00] outline-none"
+                >
+                  {SECTORS.map(s => (
+                    // Solo mostrar destinos que estén "después" del origen
+                    <option 
+                      key={s.id} 
+                      value={s.id} 
+                      disabled={SECTOR_ORDER.indexOf(s.id) <= SECTOR_ORDER.indexOf(fromSector)}
+                      className={SECTOR_ORDER.indexOf(s.id) <= SECTOR_ORDER.indexOf(fromSector) ? 'text-gray-300' : ''}
+                    >
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
           
-          <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
-            <h4 className="text-blue-800 font-semibold text-sm mb-2">Detalle</h4>
-            <div className="flex items-center gap-2 text-sm text-blue-700">
-              <span className="font-bold">{SECTORS.find(s => s.id === currentMove.source)?.name}</span>
-              <span className="text-blue-400">➔</span>
-              <span className="font-bold">{SECTORS.find(s => s.id === currentMove.target)?.name}</span>
-            </div>
+          {/* DETALLE DE PASOS */}
+          <div className={`p-4 rounded-xl border ${isValidPath ? 'bg-blue-50 border-blue-100' : 'bg-red-50 border-red-100'}`}>
+            <h4 className={`font-semibold text-sm mb-2 ${isValidPath ? 'text-blue-800' : 'text-red-800'}`}>
+              {isValidPath ? 'Resumen de la operación' : 'Ruta Inválida'}
+            </h4>
+            {isValidPath ? (
+              <div className="space-y-2">
+                <p className="text-xs text-blue-600">Se registrarán automáticamente {calculatedPath.length} movimientos:</p>
+                <div className="space-y-1 pl-2 border-l-2 border-blue-200">
+                  {calculatedPath.map((move, idx) => (
+                    <div key={move.id} className="text-xs text-blue-700 flex items-center gap-2">
+                      <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold">{idx + 1}</span>
+                      <span>{SECTORS.find(s=>s.id === move.source).name} ➔ {SECTORS.find(s=>s.id === move.target).name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-red-600">Seleccione un destino posterior al origen.</p>
+            )}
           </div>
 
           <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
             <div className="flex items-center gap-2 mb-3">
                <History className="w-4 h-4 text-gray-500" />
-               <h3 className="font-semibold text-gray-700 text-sm">Últimos Movimientos</h3>
+               <h3 className="font-semibold text-gray-700 text-sm">Historial Reciente</h3>
             </div>
             
             {history.length === 0 ? (
@@ -310,18 +393,25 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
           </div>
         </div>
 
+        {/* INPUT DE PRODUCTOS */}
         <div className="lg:col-span-2 space-y-4">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
-              <span className="font-semibold text-gray-700">Cargar: {currentMove.label}</span>
-              <Button onClick={handleSave} variant="success" className="py-1 px-3 text-xs sm:text-sm" disabled={loading}>
-                {loading ? 'Guardando...' : <><Save className="w-4 h-4" /> Guardar</>}
+              <span className="font-semibold text-gray-700">
+                Cargar: {SECTORS.find(s=>s.id === fromSector)?.name} ➔ {SECTORS.find(s=>s.id === toSector)?.name}
+              </span>
+              <Button onClick={handleSave} variant="success" className="py-1 px-3 text-xs sm:text-sm" disabled={loading || !isValidPath}>
+                {loading ? 'Guardando...' : <><Save className="w-4 h-4" /> Guardar Todo</>}
               </Button>
             </div>
             
-            <div className="divide-y divide-gray-100">
+            <div className={`divide-y divide-gray-100 ${!isValidPath ? 'opacity-50 pointer-events-none' : ''}`}>
               {PRODUCTS.map((prod) => {
-                const savedVal = stockState[selectedMove]?.[prod.id] || 0;
+                // Mostrar stock actual solo si es una etapa simple (1 paso), si no, es confuso mostrar stock de multiples etapas
+                const showStock = calculatedPath.length === 1;
+                const singleMoveId = calculatedPath[0]?.id;
+                const savedVal = showStock ? (stockState[singleMoveId]?.[prod.id] || 0) : 0;
+
                 return (
                   <div key={prod.id} className={`p-4 flex items-center justify-between hover:bg-gray-50 transition-colors ${prod.color} bg-opacity-30`}>
                     <div className="flex items-center gap-3">
@@ -331,7 +421,7 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
                       </span>
                     </div>
                     <div className="flex items-center gap-4">
-                      {savedVal > 0 && (
+                      {showStock && savedVal > 0 && (
                         <div className="text-right hidden sm:block">
                           <span className="text-[10px] text-gray-500 uppercase tracking-wider block">Hoy</span>
                           <span className="text-sm font-bold text-gray-700">{savedVal}</span>
@@ -351,7 +441,7 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
               })}
             </div>
             <div className="p-4 bg-gray-50 border-t border-gray-100 text-right">
-              <Button onClick={handleSave} className="w-full sm:w-auto" disabled={loading}>
+              <Button onClick={handleSave} className="w-full sm:w-auto" disabled={loading || !isValidPath}>
                 {loading ? '...' : 'Confirmar y Guardar'}
               </Button>
             </div>
@@ -486,7 +576,7 @@ export default function StockApp() {
   const [activeTab, setActiveTab] = useState('rapidos'); 
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState(null);
-  const [isResetting, setIsResetting] = useState(false); // <--- Nuevo Estado para Feedback
+  const [isResetting, setIsResetting] = useState(false);
   
   // Estados Iniciales
   const [stockState, setStockState] = useState({
@@ -524,12 +614,11 @@ export default function StockApp() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Suscripción a Firestore (CORREGIDO: Ruta de 6 segmentos)
+  // 2. Suscripción a Firestore
   useEffect(() => {
     if (!user || !db) return;
 
     try {
-      // Rutas corregidas agregando /core/ como colección intermedia
       const stockCurrentRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_current');
       const stockPrevRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_previous');
       const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'app_config');
@@ -568,14 +657,12 @@ export default function StockApp() {
 
     try {
       const now = new Date();
-      const currentDateString = now.toDateString(); // Ej: "Mon Dec 02 2025"
+      const currentDateString = now.toDateString(); 
       const [resetHour, resetMinute] = config.resetTime.split(':').map(Number);
       
-      // Crear objeto fecha para el umbral de hoy
       const todayResetThreshold = new Date(now);
       todayResetThreshold.setHours(resetHour, resetMinute, 0, 0);
 
-      // Si la hora actual es menor al threshold, aún no es momento.
       if (now < todayResetThreshold) return;
 
       const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'app_config');
@@ -585,19 +672,16 @@ export default function StockApp() {
       let resetPerformed = false;
 
       await runTransaction(db, async (transaction) => {
-          // LECTURAS
           const configDoc = await transaction.get(configRef);
           const serverConfig = configDoc.exists() ? configDoc.data() : config;
           
-          // Verificamos si ya se hizo HOY
           if (serverConfig.lastResetDate === currentDateString) {
-             return; // Ya hecho, abortamos.
+             return; 
           }
           
           const currentStockDoc = await transaction.get(stockCurrentRef);
           const currentStockData = currentStockDoc.exists() ? currentStockDoc.data() : { move_1: {}, move_2: {}, move_3: {}, move_4: {} };
 
-          // ESCRITURAS
           transaction.set(stockPrevRef, currentStockData);
           transaction.set(stockCurrentRef, { move_1: {}, move_2: {}, move_3: {}, move_4: {} });
           transaction.set(configRef, { ...serverConfig, lastResetDate: currentDateString });
@@ -605,19 +689,16 @@ export default function StockApp() {
           resetPerformed = true;
       });
       
-      // Chequeo secundario solo para el feedback visual en UI (fuera de la transacción)
       if (config.lastResetDate !== currentDateString) {
           setIsResetting(true);
-          setTimeout(() => setIsResetting(false), 3000); // Mostrar aviso por 3 segs
+          setTimeout(() => setIsResetting(false), 3000); 
       }
 
-      // --- AGREGADO: Borrar historial si se hizo el reset ---
       if (resetPerformed) {
         console.log("Reset diario confirmado. Limpiando historial de transacciones...");
         const transactionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
         const transactionsSnapshot = await getDocs(transactionsRef);
         
-        // Usamos un batch para borrar eficientemente
         const deleteBatch = writeBatch(db);
         transactionsSnapshot.forEach((doc) => {
           deleteBatch.delete(doc.ref);
@@ -639,24 +720,53 @@ export default function StockApp() {
     return () => clearInterval(interval);
   }, [user, config.resetTime, config.lastResetDate]); 
 
-  // Manejadores
-  const handleUpdateStock = async (moveId, values) => {
+  // --- NUEVO MANEJADOR DE ACTUALIZACIÓN (Soporta múltiples pasos) ---
+  const handleUpdateStock = async (movesToExecute, values) => {
     if (!user) return;
+    
+    // Normalizar entrada: si viene un solo objeto, lo hacemos array
+    const movesArray = Array.isArray(movesToExecute) ? movesToExecute : [movesToExecute];
+
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'transactions'), {
-        moveId, values, timestamp: serverTimestamp(), userId: user.uid
+      const batch = writeBatch(db);
+      const timestamp = serverTimestamp();
+      
+      // 1. Crear transacciones en historial para CADA movimiento
+      movesArray.forEach(move => {
+        const transRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'transactions'));
+        batch.set(transRef, {
+          moveId: move.id,
+          values,
+          timestamp,
+          userId: user.uid
+        });
       });
-      const newStockState = { ...stockState };
-      if (!newStockState[moveId]) newStockState[moveId] = {};
-      Object.keys(values).forEach(prodId => {
-        const currentVal = parseInt(newStockState[moveId][prodId] || 0);
-        const addVal = parseInt(values[prodId]);
-        newStockState[moveId][prodId] = currentVal + addVal;
+
+      // 2. Calcular nuevo estado del stock acumulado
+      // Hacemos una copia profunda del estado actual para modificarlo
+      const newStockState = JSON.parse(JSON.stringify(stockState));
+
+      // Iteramos sobre cada movimiento y aplicamos los valores
+      movesArray.forEach(move => {
+        const moveId = move.id;
+        if (!newStockState[moveId]) newStockState[moveId] = {};
+        
+        Object.keys(values).forEach(prodId => {
+          const currentVal = parseInt(newStockState[moveId][prodId] || 0);
+          const addVal = parseInt(values[prodId]);
+          newStockState[moveId][prodId] = currentVal + addVal;
+        });
       });
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_current'), newStockState);
+
+      // 3. Guardar el estado FINAL del stock
+      const stockRef = doc(db, 'artifacts', appId, 'public', 'data', 'core', 'stock_current');
+      batch.set(stockRef, newStockState);
+
+      await batch.commit();
+
     } catch (e) {
       console.error(e);
-      alert("Error guardando.");
+      alert("Error guardando los movimientos.");
     }
   };
 
@@ -706,7 +816,6 @@ export default function StockApp() {
              <span className="font-bold text-lg hidden sm:block">MULTIPLEX</span>
           </div>
           
-          {/* Navegación Superior: Oculta en móviles (hidden md:flex) */}
           <nav className="hidden md:flex space-x-1 overflow-x-auto scrollbar-hide flex-1 justify-center mx-4">
              {menuItems.map(item => (
                <button 
@@ -732,7 +841,6 @@ export default function StockApp() {
           </nav>
 
           <div className="flex items-center gap-3">
-             {/* Indicador de Estado - Texto oculto en móvil */}
              {authError ? (
                <div className="bg-red-600 px-2 py-1 rounded flex items-center gap-1 text-xs font-bold animate-pulse" title={authError}>
                  <WifiOff className="w-3 h-3" /> <span className="hidden sm:inline">Error</span>
