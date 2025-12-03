@@ -11,9 +11,13 @@ export const useAuth = () => {
 
     const initAuth = async () => {
       try {
-        // Variable global inyectada por el entorno (si existe)
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+        // CORRECCIÓN #3: Acceso seguro a variable global
+        // Verificamos explícitamente en el objeto window para evitar errores de referencia
+        // y permitir la inyección de tokens si el entorno lo soporta.
+        const customToken = window.__initial_auth_token;
+
+        if (customToken) {
+          await signInWithCustomToken(auth, customToken);
         } else {
           await signInAnonymously(auth);
         }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { doc, runTransaction, collection, getDocs, writeBatch } from 'firebase/firestore';
 import { db, APP_ID } from '../config/firebase';
+import { MOVEMENTS_TYPES } from '../config/constants'; // Importamos las constantes para hacerlo dinámico
 
 export const useDailyReset = (user, config) => {
   // 'isResetting': indica que se está ejecutando el proceso de cierre (esto SI bloquea).
@@ -20,10 +21,6 @@ export const useDailyReset = (user, config) => {
 
     const runDailyCheck = async () => {
       try {
-        // NOTA: Ya no ponemos setCheckingDate(true) aquí adentro.
-        // Así, las ejecuciones del intervalo (cada minuto) son silenciosas
-        // y no mostrarán el cartel de "Sincronizando..." a menos que encuentren algo.
-
         const now = new Date();
         const currentDateString = now.toDateString(); 
         const [resetHour, resetMinute] = config.resetTime.split(':').map(Number);
@@ -60,8 +57,15 @@ export const useDailyReset = (user, config) => {
             const currentStockDoc = await transaction.get(stockCurrentRef);
             const currentStockData = currentStockDoc.exists() ? currentStockDoc.data() : {};
 
+            // CORRECCIÓN #1: Generación dinámica del objeto vacío
+            // En lugar de hardcodear { move_1: {}, ... }, lo creamos basado en la config actual.
+            const emptyStock = MOVEMENTS_TYPES.reduce((acc, move) => {
+                acc[move.id] = {};
+                return acc;
+            }, {});
+
             transaction.set(stockPrevRef, currentStockData);
-            transaction.set(stockCurrentRef, { move_1: {}, move_2: {}, move_3: {}, move_4: {} });
+            transaction.set(stockCurrentRef, emptyStock); // Usamos el objeto dinámico
             transaction.set(configRef, { ...serverConfig, lastResetDate: currentDateString });
         });
         
@@ -91,10 +95,10 @@ export const useDailyReset = (user, config) => {
       }
     };
 
-    // 1. Ejecución Inmediata (Bloqueante al inicio por el setCheckingDate(true) de arriba)
+    // 1. Ejecución Inmediata
     runDailyCheck();
 
-    // 2. Ejecución Periódica (Silenciosa, ya no bloquea la UI cada minuto)
+    // 2. Ejecución Periódica
     const interval = setInterval(runDailyCheck, 60000); 
     return () => clearInterval(interval);
 
