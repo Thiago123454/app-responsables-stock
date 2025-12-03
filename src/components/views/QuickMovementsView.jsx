@@ -1,11 +1,95 @@
 import React, { useState, useMemo } from 'react';
-import { ArrowRight, History, Trash2, Save } from 'lucide-react';
+import { ArrowRight, History, Trash2, Save, ArrowLeft, Calendar } from 'lucide-react';
 import { PRODUCTS, SECTOR_ORDER, SECTORS, MOVEMENTS_TYPES } from '../../config/constants';
 import { getIntermediateMoves } from '../../utils/helpers';
 import Button from '../ui/Button';
 import PageLayout from '../ui/PageLayout';
 
+// --- SUB-COMPONENTE: VISTA DE HISTORIAL COMPLETO ---
+const HistoryFullView = ({ history, onUndo, onBack }) => {
+  return (
+    <PageLayout 
+      title="Historial de Movimientos" 
+      subtitle="Registro completo de operaciones recientes"
+      actions={
+        <Button variant="secondary" onClick={onBack} className="flex items-center gap-2">
+           <ArrowLeft className="w-4 h-4" /> Volver a Carga
+        </Button>
+      }
+    >
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        {history.length === 0 ? (
+          <div className="p-12 text-center text-gray-500">
+            <History className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+            <p>No hay movimientos registrados aún.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200">
+                <tr>
+                  <th className="px-6 py-3">Hora</th>
+                  <th className="px-6 py-3">Movimiento</th>
+                  <th className="px-6 py-3">Detalle</th>
+                  <th className="px-6 py-3 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {history.map((item) => {
+                  const moveLabel = MOVEMENTS_TYPES.find(m => m.id === item.moveId)?.label || 'Movimiento desconocido';
+                  const dateObj = item.timestamp ? new Date(item.timestamp.seconds * 1000) : new Date();
+                  const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  const dateStr = dateObj.toLocaleDateString();
+
+                  return (
+                    <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="font-medium text-gray-900">{timeStr}</div>
+                        <div className="text-xs text-gray-400">{dateStr}</div>
+                      </td>
+                      <td className="px-6 py-4 text-gray-800 font-medium">
+                        {moveLabel}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries(item.values).map(([prodId, val]) => {
+                            const prod = PRODUCTS.find(p => p.id === prodId);
+                            return (
+                              <span key={prodId} className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs border ${prod?.color || 'bg-gray-100'} border-black/5`}>
+                                <span className="font-bold">{val}</span> {prod?.name || prodId}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                         <button 
+                           onClick={() => {
+                             if(window.confirm('¿Seguro que deseas deshacer este movimiento? Se restará del stock actual.')) {
+                               onUndo(item);
+                             }
+                           }}
+                           className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded transition-colors"
+                           title="Deshacer movimiento"
+                         >
+                           <Trash2 className="w-4 h-4" />
+                         </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </PageLayout>
+  );
+};
+
+// --- COMPONENTE PRINCIPAL ---
 const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
+  const [viewMode, setViewMode] = useState('form'); // 'form' | 'history'
   const [fromSector, setFromSector] = useState(SECTOR_ORDER[1]); // Default: Deposito
   const [toSector, setToSector] = useState(SECTOR_ORDER[2]); // Default: Puerta
   
@@ -17,7 +101,6 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
     return getIntermediateMoves(fromSector, toSector);
   }, [fromSector, toSector]);
 
-  // Validar si la ruta es válida
   const isValidPath = calculatedPath.length > 0;
 
   const handleInputChange = (productId, value) => {
@@ -39,23 +122,32 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
     }
 
     if (!isValidPath) {
-      alert("La ruta seleccionada no es válida. Asegúrese de mover en la dirección correcta (ej: Deposito -> Candy).");
+      alert("La ruta seleccionada no es válida.");
       return;
     }
 
     setLoading(true);
-    // Enviamos TODOS los movimientos intermedios
-    // El App.jsx ahora manejará un array de movimientos
     await onUpdateStock(calculatedPath, valuesToSave);
-    
     setLoading(false);
     setTempValues({});
+    // Opcional: Mostrar feedback visual de éxito
   };
 
+  // 1. SI ESTAMOS EN MODO HISTORIAL, RETORNAMOS EL SUB-COMPONENTE
+  if (viewMode === 'history') {
+    return <HistoryFullView history={history} onUndo={onUndo} onBack={() => setViewMode('form')} />;
+  }
+
+  // 2. SI NO, MOSTRAMOS EL FORMULARIO ORIGINAL
   return (
     <PageLayout 
       title="Movimientos Rápidos" 
-      subtitle="Registre el flujo de mercadería. Salte etapas y el sistema rellenará los intermedios."
+      subtitle="Registre el flujo de mercadería entre sectores."
+      actions={
+        <Button variant="secondary" onClick={() => setViewMode('history')} className="flex items-center gap-2 text-xs sm:text-sm">
+           <History className="w-4 h-4" /> Ver Historial
+        </Button>
+      }
     >
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 space-y-4">
@@ -71,9 +163,7 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
                   value={fromSector}
                   onChange={(e) => {
                     setFromSector(e.target.value);
-                    // Resetear 'to' si es inválido o igual
                     if(SECTOR_ORDER.indexOf(e.target.value) >= SECTOR_ORDER.indexOf(toSector)) {
-                       // Intentar poner el siguiente disponible
                        const nextIdx = SECTOR_ORDER.indexOf(e.target.value) + 1;
                        if (nextIdx < SECTOR_ORDER.length) setToSector(SECTOR_ORDER[nextIdx]);
                     }
@@ -100,7 +190,6 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
                   className="w-full p-2.5 bg-gray-50 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-[#ff7f00] outline-none"
                 >
                   {SECTORS.map(s => (
-                    // Solo mostrar destinos que estén "después" del origen
                     <option 
                       key={s.id} 
                       value={s.id} 
@@ -137,45 +226,23 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
             )}
           </div>
 
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-            <div className="flex items-center gap-2 mb-3">
-               <History className="w-4 h-4 text-gray-500" />
-               <h3 className="font-semibold text-gray-700 text-sm">Historial Reciente</h3>
-            </div>
-            
-            {history.length === 0 ? (
-              <p className="text-xs text-gray-400 italic">No hay movimientos recientes.</p>
-            ) : (
-              <ul className="space-y-3">
-                {history.slice(0, 5).map((item) => (
-                  <li key={item.id} className="bg-gray-50 p-3 rounded-lg text-xs relative group border border-gray-100">
-                    <div className="font-medium text-gray-800 mb-1">
-                      {MOVEMENTS_TYPES.find(m => m.id === item.moveId)?.label}
-                    </div>
-                    <div className="text-gray-500 space-y-1">
-                       {Object.entries(item.values).map(([prodId, val]) => (
-                         <div key={prodId} className="flex justify-between">
-                            <span>{PRODUCTS.find(p => p.id === prodId)?.name}:</span>
-                            <span className="font-mono text-gray-700">+{val}</span>
-                         </div>
-                       ))}
-                    </div>
-                    <button 
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onUndo(item);
-                      }}
-                      className="absolute top-2 right-2 p-1.5 bg-white border border-gray-200 text-gray-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 rounded-md transition-colors cursor-pointer z-10 shadow-sm"
-                      title="Deshacer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+          {/* TARJETA DE ÚLTIMA ACTIVIDAD (RESUMEN) */}
+          <div className="bg-orange-50 p-4 rounded-xl border border-orange-100">
+             <div className="flex items-center gap-2 mb-2 text-orange-800">
+                <Calendar className="w-4 h-4" />
+                <h3 className="text-sm font-bold">Actividad Reciente</h3>
+             </div>
+             {history.length > 0 ? (
+                <div className="text-xs text-orange-700">
+                   <p>Último mov: <strong>{MOVEMENTS_TYPES.find(m => m.id === history[0].moveId)?.label}</strong></p>
+                   <p className="mt-1 opacity-75">{new Date(history[0].timestamp?.seconds * 1000).toLocaleTimeString()}</p>
+                   <button onClick={() => setViewMode('history')} className="mt-2 text-orange-900 underline font-medium">Ver todos</button>
+                </div>
+             ) : (
+                <p className="text-xs text-orange-600">Sin movimientos hoy.</p>
+             )}
           </div>
+
         </div>
 
         {/* INPUT DE PRODUCTOS */}
@@ -192,7 +259,6 @@ const QuickMovementsView = ({ stockState, history, onUpdateStock, onUndo }) => {
             
             <div className={`divide-y divide-gray-100 ${!isValidPath ? 'opacity-50 pointer-events-none' : ''}`}>
               {PRODUCTS.map((prod) => {
-                // Mostrar stock actual solo si es una etapa simple (1 paso), si no, es confuso mostrar stock de multiples etapas
                 const showStock = calculatedPath.length === 1;
                 const singleMoveId = calculatedPath[0]?.id;
                 const savedVal = showStock ? (stockState[singleMoveId]?.[prod.id] || 0) : 0;
