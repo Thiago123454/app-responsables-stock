@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Home, ArrowRightLeft, Mail, Send, Settings, Zap, Wifi, WifiOff, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Home, ArrowRightLeft, Mail, Send, Settings, Zap, Wifi, WifiOff, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
 
-// Hooks Personalizados (Nuestra nueva modularización)
+// Hooks Personalizados
 import { useAuth } from './hooks/useAuth';
 import { useStockData } from './hooks/useStockData';
 import { useDailyReset } from './hooks/useDailyReset';
@@ -40,16 +40,23 @@ export default function StockApp() {
   } = useStockData(user);
 
   // 3. Hook de Proceso en Segundo Plano (Reset)
-  const { isResetting } = useDailyReset(user, config);
+  // Ahora usamos 'shouldBlockApp' para proteger la integridad de los datos
+  const { isResetting, shouldBlockApp } = useDailyReset(user, config);
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col relative">
       
-      {/* Banner de Reset */}
-      {isResetting && (
-        <div className="bg-blue-600 text-white px-4 py-2 text-center text-sm font-bold fixed top-16 left-0 w-full z-40 flex justify-center gap-2 shadow-md">
-          <RefreshCw className="w-4 h-4 animate-spin" />
-          <span>Realizando cierre diario...</span>
+      {/* OVERLAY DE BLOQUEO (Solución al Riesgo Arquitectónico) */}
+      {/* Si estamos verificando fecha o reseteando, bloqueamos TODA la app */}
+      {shouldBlockApp && (
+        <div className="fixed inset-0 z-[100] bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center text-[#bf0000]">
+          <div className="bg-white p-6 rounded-2xl shadow-xl border border-gray-100 flex flex-col items-center animate-in zoom-in duration-300">
+             <Loader2 className="w-10 h-10 animate-spin mb-3" />
+             <h3 className="text-lg font-bold text-gray-800">
+               {isResetting ? 'Realizando Cierre Diario...' : 'Sincronizando Fecha...'}
+             </h3>
+             <p className="text-sm text-gray-500 mt-1">Por favor espere un momento.</p>
+          </div>
         </div>
       )}
 

@@ -3,13 +3,27 @@ import { doc, runTransaction, collection, getDocs, writeBatch } from 'firebase/f
 import { db, APP_ID } from '../config/firebase';
 
 export const useDailyReset = (user, config) => {
+  // 'isResetting': indica que se está ejecutando el proceso de cierre (esto SI bloquea).
   const [isResetting, setIsResetting] = useState(false);
+  
+  // 'checkingDate': indica validación inicial. Iniciamos en true para bloquear al montar.
+  const [checkingDate, setCheckingDate] = useState(true);
 
   useEffect(() => {
-    if (!user || !db || !config) return;
+    if (!user || !db || !config) {
+        if(user === null) setCheckingDate(false); 
+        return;
+    }
 
-    const checkAndRun = async () => {
+    // Bloqueamos la UI explícitamente solo al montar el componente o cambiar la config
+    setCheckingDate(true);
+
+    const runDailyCheck = async () => {
       try {
+        // NOTA: Ya no ponemos setCheckingDate(true) aquí adentro.
+        // Así, las ejecuciones del intervalo (cada minuto) son silenciosas
+        // y no mostrarán el cartel de "Sincronizando..." a menos que encuentren algo.
+
         const now = new Date();
         const currentDateString = now.toDateString(); 
         const [resetHour, resetMinute] = config.resetTime.split(':').map(Number);
@@ -17,36 +31,43 @@ export const useDailyReset = (user, config) => {
         const todayResetThreshold = new Date(now);
         todayResetThreshold.setHours(resetHour, resetMinute, 0, 0);
 
-        // Si aún no es hora, no hacemos nada
-        if (now < todayResetThreshold) return;
+        // Si es temprano (antes de la hora de cierre), liberamos y salimos.
+        if (now < todayResetThreshold) {
+            setCheckingDate(false);
+            return;
+        }
 
         // Referencias
         const configRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'app_config');
         const stockPrevRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'stock_previous');
         const stockCurrentRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'stock_current');
 
-        let resetPerformed = false;
+        let resetWasNeeded = false;
 
         await runTransaction(db, async (transaction) => {
             const configDoc = await transaction.get(configRef);
             const serverConfig = configDoc.exists() ? configDoc.data() : config;
             
-            // Si ya se hizo el reset hoy (según el servidor), abortamos
-            if (serverConfig.lastResetDate === currentDateString) return; 
+            // Si ya se hizo el cierre hoy, liberamos y salimos.
+            if (serverConfig.lastResetDate === currentDateString) {
+                return; 
+            }
+
+            // --- DETECTAMOS NUEVO DÍA ---
+            resetWasNeeded = true;
             
+            // Lógica de movimiento de stock
             const currentStockDoc = await transaction.get(stockCurrentRef);
             const currentStockData = currentStockDoc.exists() ? currentStockDoc.data() : {};
 
-            // Mover actual a previo y limpiar actual
             transaction.set(stockPrevRef, currentStockData);
             transaction.set(stockCurrentRef, { move_1: {}, move_2: {}, move_3: {}, move_4: {} });
             transaction.set(configRef, { ...serverConfig, lastResetDate: currentDateString });
-            
-            resetPerformed = true;
         });
         
-        if (resetPerformed) {
-          setIsResetting(true);
+        if (resetWasNeeded) {
+          setIsResetting(true); // Esto activará el bloqueo visual "Realizando Cierre..."
+          
           // Limpieza de historial
           const transactionsRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions');
           const batch = writeBatch(db);
@@ -54,20 +75,33 @@ export const useDailyReset = (user, config) => {
           snap.forEach(d => batch.delete(d.ref));
           await batch.commit();
           
-          setTimeout(() => setIsResetting(false), 3000); 
+          setTimeout(() => {
+              setIsResetting(false);
+              setCheckingDate(false);
+          }, 2000); 
+        } else {
+            // Si no hubo que hacer nada, nos aseguramos de liberar el bloqueo inicial
+            setCheckingDate(false);
         }
 
       } catch (e) {
-        console.error("Error en reset:", e);
+        console.error("Error en daily check:", e);
+        setCheckingDate(false);
         setIsResetting(false);
       }
     };
 
-    checkAndRun();
-    const interval = setInterval(checkAndRun, 60000); // Chequear cada minuto
+    // 1. Ejecución Inmediata (Bloqueante al inicio por el setCheckingDate(true) de arriba)
+    runDailyCheck();
+
+    // 2. Ejecución Periódica (Silenciosa, ya no bloquea la UI cada minuto)
+    const interval = setInterval(runDailyCheck, 60000); 
     return () => clearInterval(interval);
 
-  }, [user, config.resetTime, config.lastResetDate]);
+  }, [user, config?.resetTime]);
 
-  return { isResetting };
+  return { 
+      isResetting, 
+      shouldBlockApp: isResetting || checkingDate 
+  };
 };
