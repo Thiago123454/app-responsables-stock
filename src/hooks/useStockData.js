@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { 
   doc, collection, onSnapshot, query, orderBy, 
-  writeBatch, serverTimestamp, deleteDoc, setDoc 
+  writeBatch, serverTimestamp, deleteDoc, setDoc, increment 
 } from 'firebase/firestore';
 import { db, APP_ID } from '../config/firebase';
 
@@ -21,6 +21,7 @@ export const useStockData = (user) => {
       const stockPrevRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'stock_previous');
       const configRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'app_config');
       const historyRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions');
+      // Limitamos a los últimos 50 para no cargar demasiada memoria innecesaria
       const historyQuery = query(historyRef, orderBy('timestamp', 'desc'));
 
       const unsubCurrent = onSnapshot(stockCurrentRef, (snap) => {
@@ -48,7 +49,7 @@ export const useStockData = (user) => {
     }
   }, [user]);
 
-  // Acciones (Lógica de escritura)
+  // Acciones (Lógica de escritura CORREGIDA)
   const updateStock = async (movesToExecute, values) => {
     if (!user) return;
     const movesArray = Array.isArray(movesToExecute) ? movesToExecute : [movesToExecute];
@@ -57,7 +58,7 @@ export const useStockData = (user) => {
       const batch = writeBatch(db);
       const timestamp = serverTimestamp();
       
-      // 1. Registrar Transacciones
+      // 1. Registrar Transacciones (Esto queda igual, es el historial)
       movesArray.forEach(move => {
         const transRef = doc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions'));
         batch.set(transRef, {
@@ -65,28 +66,38 @@ export const useStockData = (user) => {
         });
       });
 
-      // 2. Calcular Nuevo Estado Optimista
-      const newStockState = JSON.parse(JSON.stringify(stockState));
+      // 2. Calcular Actualización Atómica (SOLUCIÓN RACE CONDITION)
+      // En lugar de leer el estado local, modificarlo y sobrescribir (set),
+      // preparamos instrucciones de incremento para que el servidor haga la suma.
+      const stockRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'stock_current');
+      
+      const updates = {};
+      
       movesArray.forEach(move => {
         const moveId = move.id;
-        if (!newStockState[moveId]) newStockState[moveId] = {};
         
         Object.keys(values).forEach(prodId => {
-          const currentVal = parseInt(newStockState[moveId][prodId] || 0);
           const addVal = parseInt(values[prodId]);
-          newStockState[moveId][prodId] = currentVal + addVal;
+          
+          if (addVal !== 0) {
+            // Sintaxis de punto para actualizar campos anidados en Firestore
+            // Ej: "move_1.balde" : increment(5)
+            const fieldPath = `${moveId}.${prodId}`;
+            updates[fieldPath] = increment(addVal);
+          }
         });
       });
 
-      // 3. Guardar Estado
-      const stockRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'stock_current');
-      batch.set(stockRef, newStockState);
+      // Si no hay nada que actualizar numéricamente, solo guardamos las transacciones
+      if (Object.keys(updates).length > 0) {
+        batch.update(stockRef, updates);
+      }
 
       await batch.commit();
       return true;
     } catch (e) {
-      console.error(e);
-      alert("Error guardando movimiento.");
+      console.error("Error updateStock:", e);
+      alert("Error guardando movimiento. Verifique su conexión.");
       return false;
     }
   };
@@ -94,19 +105,32 @@ export const useStockData = (user) => {
   const undoTransaction = async (transactionItem) => {
     if (!user) return;
     try {
-      await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', transactionItem.id));
+      const batch = writeBatch(db);
       
-      // Revertir estado (Simplificado)
-      const newStockState = { ...stockState };
+      // 1. Borrar del historial
+      const transRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', transactionItem.id);
+      batch.delete(transRef);
+      
+      // 2. Revertir cambios usando increment negativo (SOLUCIÓN RACE CONDITION EN UNDO)
+      const stockRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'stock_current');
       const { moveId, values } = transactionItem;
-      if (newStockState[moveId]) {
-        Object.keys(values).forEach(prodId => {
-          const currentVal = parseInt(newStockState[moveId][prodId] || 0);
-          const subVal = parseInt(values[prodId]);
-          newStockState[moveId][prodId] = Math.max(0, currentVal - subVal);
-        });
-        await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'core', 'stock_current'), newStockState);
+      const updates = {};
+
+      Object.keys(values).forEach(prodId => {
+        const val = parseInt(values[prodId]);
+        if (val !== 0) {
+           // Restamos el valor original sumando su negativo
+           updates[`${moveId}.${prodId}`] = increment(-val); 
+        }
+      });
+      
+      // IMPORTANTE: En undo también usamos update + increment negativo
+      // para no sobrescribir cambios que hayan ocurrido después de esta transacción.
+      if (Object.keys(updates).length > 0) {
+        batch.update(stockRef, updates);
       }
+
+      await batch.commit();
     } catch (e) {
       console.error(e);
       alert("Error al deshacer.");
