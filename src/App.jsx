@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Home, ArrowRightLeft, Mail, Send, Settings, Zap, Wifi, WifiOff, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
 
 // Hooks Personalizados
@@ -11,6 +11,10 @@ import PageLayout from './components/ui/PageLayout';
 import SettingsView from './components/views/SettingsView';
 import QuickMovementsView from './components/views/QuickMovementsView';
 import StockSheetView from './components/views/StockSheetView';
+
+// Prompts de Instalación (PWA)
+import IosInstallPrompt from './components/ui/IosInstallPrompt';
+import AndroidInstallPrompt from './components/ui/AndroidInstallPrompt'; // <-- Nuevo Import
 
 const menuItems = [
   { id: 'rapidos', label: 'Mov. Rápidos', icon: Zap }, 
@@ -30,6 +34,65 @@ const PlaceholderView = ({ title }) => (
 export default function StockApp() {
   const [activeTab, setActiveTab] = useState('rapidos'); 
   
+  // --- LÓGICA DE INSTALACIÓN PWA (Android & iOS) ---
+  const [isIos, setIsIos] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [showIosPrompt, setShowIosPrompt] = useState(false);
+  
+  // Estados para Android
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [showAndroidPrompt, setShowAndroidPrompt] = useState(false);
+
+  useEffect(() => {
+    // 1. Detectar Entorno
+    const ua = window.navigator.userAgent.toLowerCase();
+    const ios = /iphone|ipad|ipod/.test(ua);
+    const standalone = window.matchMedia('(display-mode: standalone)').matches;
+    
+    setIsIos(ios);
+    setIsStandalone(standalone);
+
+    // 2. Lógica iOS: Si es iPhone y no está instalada, mostrar prompt visual
+    if (ios && !standalone) {
+        // Pequeño delay para no ser intrusivo al cargar
+        setTimeout(() => setShowIosPrompt(true), 3000);
+    }
+
+    // 3. Lógica Android: Escuchar evento de instalación
+    const handleBeforeInstallPrompt = (e) => {
+      // Prevenir que Chrome muestre su mini-infobar automáticamente
+      e.preventDefault();
+      // Guardar el evento para dispararlo después con nuestro botón
+      setDeferredPrompt(e);
+      // Mostrar nuestro componente visual
+      setShowAndroidPrompt(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleAndroidInstallClick = async () => {
+    if (!deferredPrompt) return;
+    
+    // Ocultar nuestro prompt visual
+    setShowAndroidPrompt(false);
+    
+    // Mostrar el prompt nativo del sistema
+    deferredPrompt.prompt();
+    
+    // Esperar a ver qué decidió el usuario
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`User response to the install prompt: ${outcome}`);
+    
+    // Ya no podemos usar este evento, lo limpiamos
+    setDeferredPrompt(null);
+  };
+  // ------------------------------------------------------------------
+
   // 1. Hook de Autenticación
   const { user, authError } = useAuth();
   
@@ -40,14 +103,12 @@ export default function StockApp() {
   } = useStockData(user);
 
   // 3. Hook de Proceso en Segundo Plano (Reset)
-  // Ahora usamos 'shouldBlockApp' para proteger la integridad de los datos
   const { isResetting, shouldBlockApp } = useDailyReset(user, config);
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col relative">
       
-      {/* OVERLAY DE BLOQUEO (Solución al Riesgo Arquitectónico) */}
-      {/* Si estamos verificando fecha o reseteando, bloqueamos TODA la app */}
+      {/* OVERLAY DE BLOQUEO */}
       {shouldBlockApp && (
         <div className="fixed inset-0 z-[100] bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center text-[#bf0000]">
           <div className="bg-white p-6 rounded-2xl shadow-xl border border-gray-100 flex flex-col items-center animate-in zoom-in duration-300">
@@ -98,7 +159,7 @@ export default function StockApp() {
       </header>
 
       {/* Contenido Principal */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6">
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 pb-24 sm:pb-6">
         {activeTab === 'rapidos' && (
           <QuickMovementsView 
             stockState={stockState} 
@@ -133,6 +194,24 @@ export default function StockApp() {
            </button>
         ))}
       </div>
+
+      {/* --- PROMPTS DE INSTALACIÓN --- */}
+      
+      {/* 1. Android / Desktop Chrome */}
+      {showAndroidPrompt && (
+         <AndroidInstallPrompt 
+            onInstall={handleAndroidInstallClick} 
+            onClose={() => setShowAndroidPrompt(false)} 
+         />
+      )}
+
+      {/* 2. iOS */}
+      {showIosPrompt && (
+         <IosInstallPrompt 
+            onClose={() => setShowIosPrompt(false)} 
+         />
+      )}
+      
     </div>
   );
 }
