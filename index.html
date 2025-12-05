@@ -5,12 +5,31 @@
     
     <meta name="robots" content="noindex">
     
-    <link rel="icon" href="./public/mi-logo.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Referencia al ícono (ruta corregida para producción) -->
+    <link rel="icon" href="/mi-logo.png" />
+    
+    <!-- Referencia al Manifiesto (ESTO QUITA LA BARRA DE CHROME) -->
+    <link rel="manifest" href="/manifest.json">
+    
+    <!-- Color de la barra de estado en móviles -->
+    <meta name="theme-color" content="#bf0000">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
     <title>Control de Stock - Multiplex</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+
+    <!-- Registro del Service Worker para habilitar la instalación real -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then((reg) => console.log('SW registrado', reg))
+            .catch((err) => console.log('SW error', err));
+        });
+      }
+    </script>
   </body>
 </html>
