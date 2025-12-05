@@ -11,10 +11,11 @@ import PageLayout from './components/ui/PageLayout';
 import SettingsView from './components/views/SettingsView';
 import QuickMovementsView from './components/views/QuickMovementsView';
 import StockSheetView from './components/views/StockSheetView';
+import HomeView from './components/views/HomeView'; // <-- Nuevo Import
 
 // Prompts de Instalación (PWA)
 import IosInstallPrompt from './components/ui/IosInstallPrompt';
-import AndroidInstallPrompt from './components/ui/AndroidInstallPrompt'; // <-- Nuevo Import
+import AndroidInstallPrompt from './components/ui/AndroidInstallPrompt';
 
 const menuItems = [
   { id: 'rapidos', label: 'Mov. Rápidos', icon: Zap }, 
@@ -171,10 +172,13 @@ export default function StockApp() {
         {activeTab === 'movimiento' && (
           <StockSheetView stockState={stockState} previousDayStock={previousDayStock} />
         )}
+        {activeTab === 'home' && (
+            <HomeView user={user} /> 
+        )}
         {activeTab === 'config' && (
           <SettingsView config={config} onSaveConfig={updateConfig} />
         )}
-        {!['rapidos', 'movimiento', 'config'].includes(activeTab) && (
+        {!['rapidos', 'movimiento', 'home', 'config'].includes(activeTab) && (
           <PageLayout title={menuItems.find(m=>m.id===activeTab)?.label}>
             <PlaceholderView title={menuItems.find(m=>m.id===activeTab)?.label} />
           </PageLayout>
